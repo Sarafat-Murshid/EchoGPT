@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef } from "react";
+import React, { useState, useCallback, useRef, useEffect } from "react";
 import { Send, Plus, History, Settings } from "lucide-react";
 import { ChatMessage } from "./components/ChatMessage";
 import { HistoryItem } from "./components/HistoryItem";
@@ -17,6 +17,25 @@ function App() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, []);
 
+  const retryWithExponentialBackoff = async (
+    fn: () => Promise<unknown>,
+    retries = 5,
+    delay = 1000
+  ) => {
+    try {
+      return await fn();
+    } catch (error: unknown) {
+      if (
+        retries === 0 ||
+        (error as { response?: { status?: number } })?.response?.status !== 429
+      ) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      return retryWithExponentialBackoff(fn, retries - 1, delay * 2);
+    }
+  };
+
   const sendMessage = useCallback(async () => {
     if (!input.trim() || isLoading) return;
 
@@ -34,7 +53,7 @@ function App() {
       setMessages((prev) => [...prev, userMessage]);
       setInput("");
 
-      const response = await retryWithExponentialBackoff(async () => {
+      const response = (await retryWithExponentialBackoff(async () => {
         return await axios.post(
           "https://api.echogpt.live/v1/chat/completions",
           {
@@ -50,7 +69,7 @@ function App() {
             },
           }
         );
-      });
+      })) as { data: { choices: { message: { content: string } }[] } };
 
       const responseContent =
         response.data.choices[0]?.message?.content || "No response received";
@@ -95,18 +114,6 @@ function App() {
     }
   }, [input, isLoading, scrollToBottom, messages]);
 
-  const retryWithExponentialBackoff = async (fn, retries = 5, delay = 1000) => {
-    try {
-      return await fn();
-    } catch (error) {
-      if (retries === 0 || error.response?.status !== 429) {
-        throw error;
-      }
-      await new Promise((resolve) => setTimeout(resolve, delay));
-      return retryWithExponentialBackoff(fn, retries - 1, delay * 2);
-    }
-  };
-
   const handleKeyPress = useCallback(
     (e: React.KeyboardEvent) => {
       if (e.key === "Enter" && !e.shiftKey) {
@@ -127,7 +134,7 @@ function App() {
         timestamp: new Date(),
         messages: [],
       },
-      ...prev,
+      ...prev.filter((chat) => chat.title !== "New Chat"),
     ]);
   }, []);
 
@@ -135,6 +142,31 @@ function App() {
     setMessages(historyItem.messages);
     setIsHistoryOpen(false);
   }, []);
+
+  const saveChatHistory = useCallback(() => {
+    const jsonData = JSON.stringify(history, null, 2);
+    localStorage.setItem("chatHistory", jsonData);
+    console.log("Chat history saved to localStorage");
+  }, [history]);
+
+  useEffect(() => {
+    const initializeChatHistory = () => {
+      const jsonData = localStorage.getItem("chatHistory");
+      if (jsonData) {
+        const parsedHistory = JSON.parse(jsonData);
+        setHistory(parsedHistory);
+        console.log("Chat history loaded from localStorage");
+      } else {
+        console.log("No chat history found in localStorage");
+      }
+    };
+
+    initializeChatHistory();
+  }, []);
+
+  useEffect(() => {
+    saveChatHistory();
+  }, [history, saveChatHistory]);
 
   return (
     <div className="flex h-screen bg-white">
